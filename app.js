@@ -7,6 +7,7 @@ let io = require('socket.io')(server);
 
 let sockets = {};
 let rooms = {};
+let users = {};
 
 io.on('connection', socket => {
   console.log('a user connected');
@@ -30,6 +31,49 @@ io.on('connection', socket => {
 
   socket.on('leave landing page', data => {
     socket.leave('landing page');
+  });
+
+  socket.on('register', data => {
+    if(data.username && data.username.length > 0 && data.password && data.password.length > 0){
+      if(!users[data.username]){
+        users[data.username] = data.password;
+        socket.username = data.username;
+        socket.emit('logged in', {
+          username: data.username,
+          loggedIn: true
+        });
+      } else {
+        socket.emit('register error', {error: ':('});
+      }
+    } else {
+      socket.emit('register error', {error: ':('});
+    }
+  });
+
+  socket.on('login', data => {
+    console.log('login, data');
+    console.log(data);
+    if(data.username && data.password){
+      if(users[data.username] && users[data.username] === data.password){
+        socket.username = data.username;
+        socket.emit('logged in', {
+          username: data.username,
+          loggedIn: true
+        });
+      } else {
+        socket.emit('login error', {error: ':('});
+      }
+    } else {
+      socket.emit('login error', {error: ':('});
+    }
+  });
+
+  socket.on('logout', data => {
+    socket.username = null
+    socket.emit('logged in', {
+      username: null,
+      loggedIn: null
+    });
   });
 
   socket.on('join room', data => {
@@ -66,9 +110,12 @@ io.on('connection', socket => {
       }
       outData.atTable = playerIsAtTable(data.room, socket);
       outData.gamestate = getGameState(data.room, socket);
-      let updatedPlayers = getPlayersAroundTable(data.room);
-      outData.black = updatedPlayers.black ? 'gäst' : null;
-      outData.white = updatedPlayers.white ? 'gäst' : null;
+      let updatedPlayers = getBlackAndWhiteUsernames(data.room);
+      outData = {
+        ...outData,
+        white: updatedPlayers.white,
+        black: updatedPlayers.black,
+      }
       if(rooms[data.room].game){
         outData = {...outData, ...rooms[data.room].game.getGameState()}
       }
@@ -96,22 +143,20 @@ io.on('connection', socket => {
       if((!playerIsAtTable(data.room, socket)) && players[color] === null){
         console.log('joined table');
         rooms[data.room].table[color] = socket;
-        let updatedPlayers = getPlayersAroundTable(data.room);
-        let black = updatedPlayers.black ? 'gäst' : null;
-        let white = updatedPlayers.white ? 'gäst' : null;
+        let updatedPlayers = getBlackAndWhiteUsernames(data.room);
         let outDataToSocket = {
-          black,
-          white,
+          black: updatedPlayers.black,
+          white: updatedPlayers.white,
           atTable: playerIsAtTable(data.room, socket)
         };
         socket.emit('table update', outDataToSocket);
         socket.to(data.room).emit('table update', {
-          black,
-          white
+          black: updatedPlayers.black,
+          white: updatedPlayers.white
         });
         let outDataToLandingPage = {rooms: returnRoomData(rooms)};
         socket.to('landing page').emit('landing page update', outDataToLandingPage);
-        if(black && white && !rooms[data.room].game){
+        if(updatedPlayers.black && updatedPlayers.white && !rooms[data.room].game){
           rooms[data.room].game = new ChessBE(gameCallback, io, data.room);
         }
       }
@@ -121,16 +166,14 @@ io.on('connection', socket => {
   socket.on('leave table', (data) => {
     removePlayerFromTable(data.room, socket, io);
     let updatedPlayers = getPlayersAroundTable(data.room);
-    let black = updatedPlayers && updatedPlayers.black ? 'gäst' : null;
-    let white = updatedPlayers && updatedPlayers.white ? 'gäst' : null;
     socket.emit('table update', {
-      black,
-      white,
+      black: updatedPlayers.black,
+      white: updatedPlayers.white,
       atTable: false,
     });
     socket.to(data.room).emit('table update', {
-      black,
-      white,
+      black: updatedPlayers.black,
+      white: updatedPlayers.white,
     });
     let outDataToLandingPage = {rooms: returnRoomData(rooms)};
     socket.to('landing page').emit('landing page update', outDataToLandingPage);
@@ -156,7 +199,7 @@ io.on('connection', socket => {
     }
     let outData = {
       room: nextEmptyRoom,
-      white: 'Gäst',
+      white: socket.username ? socket.username : 'Gäst',
       black: null,
       atTable: true,
       redirect: {roomType: 'games', room: nextEmptyRoom}
@@ -238,10 +281,7 @@ function removePlayerFromTable(room, socket, io){
       check = true;
     }
     if(check){
-      let emitData = {
-        black: rooms[room].table.black ? 'Gäst' : null,
-        white: rooms[room].table.white ? 'Gäst' : null
-      }
+      let emitData = getBlackAndWhiteUsernames(room);
       if(rooms[room].game){
         delete rooms[room].game;
         emitData = {
@@ -273,17 +313,10 @@ function gameCallback(io, room, gameState){
 }
 
 function returnRoomData(rooms){
-  let outRooms = Object.entries(rooms).map(roomEntry => {
-    let players = [];
-    if(roomEntry[1].table.white){
-      players.push('Gäst')
-    } 
-    if(roomEntry[1].table.black){
-      players.push('Gäst')
-    } 
+  let outRooms = Object.keys(rooms).map(room => {
     return {
-      room: roomEntry[0],
-      players
+      room: room,
+      players: getBlackAndWhiteUsernames(room)
     }
   });
   return outRooms;
@@ -315,4 +348,21 @@ function removePlayerFromRoom(socket, room, io){
       socket.to('landing page').emit('landing page update', landingPageData);
     }
   }
+}
+
+function getBlackAndWhiteUsernames(room){
+  let returnData = {};
+  if(rooms[room]){
+    if(rooms[room].table.white){
+      returnData.white = rooms[room].table.white.username ? rooms[room].table.white.username : 'Gäst';
+    } else {
+      returnData.white = null;
+    }
+    if(rooms[room].table.black){
+      returnData.black = rooms[room].table.black.username ? rooms[room].table.black.username : 'Gäst';
+    } else {
+      returnData.black = null;
+    }
+  }
+  return returnData;
 }
