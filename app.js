@@ -40,6 +40,7 @@ io.on('connection', socket => {
         users[data.username] = {};
         users[data.username].password = data.password;
         users[data.username].games = [];
+        users[data.username].wall = [];
         users[data.username].points = 1000;
         users[data.username].token = token;
         socket.username = data.username;
@@ -97,13 +98,17 @@ io.on('connection', socket => {
   socket.on('join user page', data => {
     let username = data.username;
     if(users[username]){
+      socket.join(`user page:${data.username}`);
       socket.emit('user page update', {
         games: users[username].games,
-        points: users[username].points
+        points: users[username].points,
+        wall: users[username].wall
       });
-    } else {
-      //redirecta till landingpage?
     }
+  });
+
+  socket.on('leave user page', data => {
+    socket.leave(`user page:${data.username}`);
   });
 
   socket.on('join users page', data => {
@@ -260,6 +265,26 @@ io.on('connection', socket => {
         rooms[data.room].game.handleFECalls(data);
       }
     }
+  });
+
+  socket.on('post to wall', data => {
+    console.log('post to wall: data and users');
+    console.log(data);
+    if(data.text && data.wallOwner && users[data.wallOwner]){
+      if(data.text.length > 0){
+        users[data.wallOwner].wall.unshift({
+          text: data.text,
+          username: socket.username,
+          timestamp: (new Date()).getTime()
+        });
+      }
+      console.log(users);
+    }
+    io.to(`user page:${data.wallOwner}`).emit('user page update', {
+      games: users[data.wallOwner].games,
+      points: users[data.wallOwner].points,
+      wall: users[data.wallOwner].wall
+    });
   });
 });
 
