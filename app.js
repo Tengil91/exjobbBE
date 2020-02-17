@@ -10,12 +10,10 @@ let rooms = {};
 let users = {};
 
 io.on('connection', socket => {
-  console.log('a user connected');
   sockets[socket.id] = socket;
   socket.emit('connection', {})
   
   socket.on('disconnect', reason => {
-    console.log('user disconnected');
     sockets[socket.id] = null;
     let roomIndexes = getUsersRoomIndex(socket, rooms);
     roomIndexes.forEach(room => {
@@ -34,32 +32,40 @@ io.on('connection', socket => {
   });
 
   socket.on('register', data => {
+    let registerError = [];
     if(data.username && data.username.length > 0 && data.password && data.password.length > 0){
       if(!users[data.username]){
-        let token = generateToken();
-        users[data.username] = {};
-        users[data.username].password = data.password;
-        users[data.username].games = [];
-        users[data.username].wall = [];
-        users[data.username].points = 1000;
-        users[data.username].token = token;
-        socket.username = data.username;
-        socket.emit('logged in', {
-          username: data.username,
-          loggedIn: true,
-          token
-        });
+        if(data.username.match(/[a-z,A-Z,0-9]*/)[0] === data.username){
+          let token = generateToken();
+          users[data.username] = {};
+          users[data.username].password = data.password;
+          users[data.username].games = [];
+          users[data.username].wall = [];
+          users[data.username].points = 1000;
+          users[data.username].token = token;
+          socket.username = data.username;
+          socket.emit('logged in', {
+            username: data.username,
+            loggedIn: true,
+            token,
+            registerError: null
+          });
+        } else {
+          registerError.push('Användarnamnet får innehålla bokstäver och siffror');
+        }
       } else {
-        socket.emit('register error', {error: ':('});
+        registerError.push('Användarnamnet är upptaget!');
       }
     } else {
-      socket.emit('register error', {error: ':('});
+      registerError.push('Fyll i lösenord och användarnamn');
+    }
+    if(registerError.length > 0){
+      socket.emit('register error', {registerError});
     }
   });
 
   socket.on('login', data => {
-    console.log('login, data');
-    console.log(data);
+    let loggedIn = false;
     if(data.username && data.password){
       if(users[data.username] && users[data.username].password === data.password){
         socket.username = data.username;
@@ -68,8 +74,7 @@ io.on('connection', socket => {
           loggedIn: true,
           token: users[data.username].token
         });
-      } else {
-        socket.emit('login error', {error: ':('});
+        loggedIn = true;
       }
     } else if(data.token && data.username){
       if(users[data.username] && users[data.username].token === data.token){
@@ -77,13 +82,14 @@ io.on('connection', socket => {
         socket.emit('logged in', {
           username: data.username,
           loggedIn: true,
-          token: users[data.username].token
+          token: users[data.username].token,
+          loginError: null
         });
-      } else {
-      socket.emit('login error', {error: ':('});
+        loggedIn = true;
       }
-    } else {
-      socket.emit('login error', {error: ':('});
+    }
+    if(!loggedIn && !data.token){
+      socket.emit('login error', {loginError: 'Användarnamnet eller lösenordet är fel'});
     }
   });
 
@@ -119,22 +125,6 @@ io.on('connection', socket => {
   });
 
   socket.on('join room', data => {
-    //Anslut till rum
-    //Grejer som ska skickas:
-    /*
-      * spelare vid bordet
-      * egen position: sitting/standing
-      * gamestate: {
-        currentlyPlaying: true/false
-        (pieces)
-        (check)
-        (matt)
-        ((moves) bara för spelaren vid draget)
-      }
-    */
-
-    console.log('joined room');
-    console.log(data);
     socket.join(data.room);
     let outData = {};
     if(data.roomType === 'game'){
@@ -161,8 +151,6 @@ io.on('connection', socket => {
       if(rooms[data.room].game){
         outData = {...outData, ...rooms[data.room].game.getGameState()}
       }
-      console.log('outData');
-      console.log(outData);
       socket.emit('table update', outData);
     }
 
@@ -183,7 +171,6 @@ io.on('connection', socket => {
     let color = data.color === 0 ? 'white' : 'black';
     if(players){
       if((!playerIsAtTable(data.room, socket)) && players[color] === null){
-        console.log('joined table');
         rooms[data.room].table[color] = socket;
         let updatedPlayers = getBlackAndWhiteUsernames(data.room);
         let outDataToSocket = {
@@ -209,13 +196,13 @@ io.on('connection', socket => {
     removePlayerFromTable(data.room, socket, io);
     let updatedPlayers = getPlayersAroundTable(data.room);
     socket.emit('table update', {
-      black: updatedPlayers.black,
-      white: updatedPlayers.white,
+      black: updatedPlayers.black ? updatedPlayers.black.username ? updatedPlayers.black.username : 'Gäst' : null,
+      white: updatedPlayers.white ? updatedPlayers.white.username ? updatedPlayers.white.username : 'Gäst' : null,
       atTable: false,
     });
     socket.to(data.room).emit('table update', {
-      black: updatedPlayers.black,
-      white: updatedPlayers.white,
+      black: updatedPlayers.black ? updatedPlayers.black.username ? updatedPlayers.black.username : 'Gäst' : null,
+      white: updatedPlayers.white ? updatedPlayers.white.username ? updatedPlayers.white.username : 'Gäst' : null,
     });
     let outDataToLandingPage = {rooms: returnRoomData(rooms)};
     socket.to('landing page').emit('landing page update', outDataToLandingPage);
@@ -247,6 +234,7 @@ io.on('connection', socket => {
       redirect: {roomType: 'game', room: nextEmptyRoom}
     }
     socket.emit('room created', outData);
+    socket.leave('landing page');
     let outDataToLandingPage = {rooms: returnRoomData(rooms)};
     socket.to('landing page').emit('landing page update', outDataToLandingPage);
   });
@@ -261,15 +249,16 @@ io.on('connection', socket => {
       if(rooms[data.room].table.white === socket){
         player = 0;
       }
-      if(rooms[data.room].game.playerTurn === player){
+      let matt = rooms[data.room].game.getGameState().matt;
+      if(matt && (player === 1 || player === 0)){
+        rooms[data.room].game.handleFECalls({waitingToStartNewGame: player});
+      } else if(rooms[data.room].game.playerTurn === player){
         rooms[data.room].game.handleFECalls(data);
-      }
+        }
     }
   });
 
   socket.on('post to wall', data => {
-    console.log('post to wall: data and users');
-    console.log(data);
     if(data.text && data.wallOwner && users[data.wallOwner]){
       if(data.text.length > 0){
         users[data.wallOwner].wall.unshift({
@@ -278,7 +267,6 @@ io.on('connection', socket => {
           timestamp: (new Date()).getTime()
         });
       }
-      console.log(users);
     }
     io.to(`user page:${data.wallOwner}`).emit('user page update', {
       games: users[data.wallOwner].games,
@@ -291,10 +279,12 @@ io.on('connection', socket => {
 server.listen(port);
 
 function findNextEmptyRoom(rooms){
+  let found = false;
   let keys = Object.keys(rooms);
   let i = 0;
-  while(true){
+  while(!found){
     if(!keys.includes(i + '')){
+      found = true;
       return i + '';
     }
     i++;
@@ -334,6 +324,17 @@ function getGameState(room, socket){
 function removePlayerFromTable(room, socket, io){
   let check = false;
   if(rooms[room]){
+    if(rooms[room].game){
+      if(rooms[room].game && (rooms[room].table.white === socket || rooms[room].table.black === socket)){
+        if(!rooms[room].game.matt){
+          //uppdatera ranking
+          let playedVS = null;
+          playedVS = rooms[room].table.white === socket ? 1 : 0;
+          calculateNewRank(rooms[room].table.white, rooms[room].table.black, playedVS);
+        }
+        rooms[room].game = null;
+      }
+    }
     if(rooms[room].table.white === socket){
       rooms[room].table.white = null;
       check = true;
@@ -344,18 +345,15 @@ function removePlayerFromTable(room, socket, io){
     }
     if(check){
       let emitData = getBlackAndWhiteUsernames(room);
-      if(rooms[room].game){
-        delete rooms[room].game;
-        emitData = {
-          ...emitData,
-          pieces: null,
-          checkingPieces: null,
-          checkedKing: null,
-          matt: null,
-          selectedPiece: null,
-          pawnCrossing: null,
-          playerTurn: null,
-        }
+      emitData = {
+        ...emitData,
+        pieces: null,
+        checkingPieces: null,
+        checkedKing: null,
+        matt: null,
+        selectedPiece: null,
+        pawnCrossing: null,
+        playerTurn: null,
       }
       io.to(room).emit('table update', emitData);
       let landingPageData = {rooms: returnRoomData(rooms)};
@@ -364,41 +362,65 @@ function removePlayerFromTable(room, socket, io){
   }
 }
 
-function gameCallback(io, room, gameState){
-  if(gameState.matt){
-    //hämta users
-    let black = rooms[room].table.black;
-    let white = rooms[room].table.white;
-    if(black.username && white.username){
-      users[black.username].games.push({
-        opponent: white.username,
-        playedAs: 'svart',
-        wonGame: gameState.checkedKing.color === 0 ? true : false
-      });
-      users[white.username].games.push({
-        opponent: black.username,
-        playedAs: 'vit',
-        wonGame: gameState.checkedKing.color === 1 ? true : false
-      });
-      let pointDifference = Math.abs(users[black.username].points - users[white.username].points);
-      let whiteIsHigherRanked = users[white.username].points - users[black.username].points > 0 ? true : false;
-      pointDifference = pointDifference > 100 ? 100 : pointDifference;
-      pointDifference = pointDifference < 0 ? 0 : pointDifference;
-      if(gameState.checkedKing.color === 0){
-        users[white.username].points -= (20 + (whiteIsHigherRanked ? pointDifference : -pointDifference)/20);
-        users[black.username].points += (20 + (whiteIsHigherRanked ? -pointDifference : pointDifference)/20);
+function calculateNewRank(white, black, winner){
+  if(black.username && white.username){
+    users[black.username].games.push({
+      opponent: white.username,
+      playedAs: 'svart',
+      wonGame: winner === 1 ? true : false
+    });
+    users[white.username].games.push({
+      opponent: black.username,
+      playedAs: 'vit',
+      wonGame: winner === 0 ? true : false
+    });
+    
+    let pointDifference = Math.abs(users[black.username].points - users[white.username].points);
+    let whiteIsHigherRanked = users[white.username].points - users[black.username].points > 0 ? true : false;
+    let points = 0;
+    if(winner === 1){
+      if(whiteIsHigherRanked){
+        points = 20 + pointDifference / 50;
       } else {
-        users[black.username].points -= (20 + (whiteIsHigherRanked ? -pointDifference : pointDifference)/20);
-        users[white.username].points += (20 + (whiteIsHigherRanked ? pointDifference : -pointDifference)/20);
+        points = 20 - pointDifference / 50;
       }
+      points = points < 0 ? 0 : points;
+      points = points > 100 ? 100 : points;
+      points = Math.round(points);
+      users[white.username].points -= points;
+      users[black.username].points += points;
+    } else {
+      if(whiteIsHigherRanked){
+        points = 20 - pointDifference / 50;
+      } else {
+        points = 20 + pointDifference / 50;
+      }
+      points = points < 0 ? 0 : points;
+      points = points > 100 ? 100 : points;
+      points = Math.round(points);
+      users[black.username].points -= points;
+      users[white.username].points += points;
     }
   }
-  if(gameState.selectedPiece){
-    //skicka bara moves till spelaren vid draget.
-    let player = gameState.playerTurn === 0 ? 'white' : 'black';
-    rooms[room].table[player].emit('table update', gameState);
+}
+
+function gameCallback(io, room, gameState){
+  if(gameState.matt && gameState.waitingToStartNewGame[0] === false && gameState.waitingToStartNewGame[1] === false){
+    let black = rooms[room].table.black;
+    let white = rooms[room].table.white;
+    calculateNewRank(white, black, gameState.checkedKing.color === 1 ? 0 : 1);
+  } 
+  if(gameState.matt && (gameState.waitingToStartNewGame[0] === true || gameState.waitingToStartNewGame[1] === true)){
+    let waitingPlayer = gameState.waitingToStartNewGame[0] ? 'white' : 'black';
+    rooms[room].table[waitingPlayer].emit('table update', {...gameState, waitingToStartNewGame: true});
   } else {
-    io.to(room).emit('table update', gameState);
+    if(gameState.selectedPiece){
+      //skicka bara moves till spelaren vid draget.
+      let player = gameState.playerTurn === 0 ? 'white' : 'black';
+      rooms[room].table[player].emit('table update', {...gameState, waitingToStartNewGame: false});
+    } else {
+      io.to(room).emit('table update', {...gameState, waitingToStartNewGame: false});
+    }
   }
 }
 
@@ -432,6 +454,7 @@ function removePlayerFromRoom(socket, room, io){
       rooms[room].users.splice(rooms[room].users.indexOf(socket), 1);
       removePlayerFromTable(room, socket, io);
     }
+    //ta bort användaren från bordet
     if(rooms[room].users.length === 0){
       delete rooms[room];
       let landingPageData = {rooms: returnRoomData(rooms)};
@@ -459,8 +482,6 @@ function getBlackAndWhiteUsernames(room){
 
 function getUsersSortedByRank(){
   let returnArray = getPlayersInArray();
-  console.log('returnArray');
-  console.log(returnArray);
   returnArray.sort((a, b) => {
     if (a.points < b.points) {
       return 1;
