@@ -29,6 +29,7 @@ exports.ChessBE = class ChessBE {
     this.checkedKing = null;
     this.matt = false;
     this.pawnCrossing = false;
+    this.waitingToStartNewGame = [false, false]
     this.pieces = [
       {
         x: 0,
@@ -234,14 +235,20 @@ exports.ChessBE = class ChessBE {
       matt: this.matt,
       selectedPiece: this.selectedPiece,
       pawnCrossing: this.pawnCrossing,
-      playerTurn: this.playerTurn
+      playerTurn: this.playerTurn,
+      waitingToStartNewGame: this.waitingToStartNewGame
     }
   }
 
   handleFECalls(callData){
-    let {x, y} = callData;
+    let {x, y, waitingToStartNewGame} = callData;
     if(this.matt){
-      this.setupNewGame();
+      if(waitingToStartNewGame === 1 || waitingToStartNewGame === 0){
+        this.waitingToStartNewGame[waitingToStartNewGame] = true;
+        if(this.waitingToStartNewGame[0] && this.waitingToStartNewGame[1]){
+          this.setupNewGame();
+        }
+      }
     } else if(this.pawnCrossing){
       let piece = this.selectPieceFromCrossingPawn(x, y, this.pawnCrossing.x, this.pawnCrossing.y, this.playerTurn);
       if(piece){
